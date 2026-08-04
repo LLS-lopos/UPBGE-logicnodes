@@ -1,11 +1,37 @@
 import bpy
 # import nodeitems_utils
 from bpy.app.handlers import persistent
-import bge_netlogic.utilities as utils
-import bge_netlogic.audio as audio
+# import bge_netlogic.utilities as utils
 import os
 import sys
 import time
+
+from .editor.sockets.socket import _sockets
+from .editor.nodes.node import _nodes
+from .editor.nodes.node import _node_manual_map
+from .editor.nodes.node import _clear_widgets
+from .ops.operator import _operators
+from .ops.operator import _reset_tree_code_writer_flag
+from .props.property import _properties
+from .ui.interface import _panels
+from .ui.interface import _lists
+from .ui.interface import _menu_items
+from .ui import node_menu
+from .props.propertyfilter import LogicNodesPropertyFilter
+from .props.globalcategory import LogicNodesGlobalCategory
+from .props.portals import LogicNodesPortal
+from .props.fmod_parameters import LogicNodesFmodParameter
+from .props.customnode import _registered_custom_classes
+from .preferences import LogicNodesAddonPreferences
+from .utilities import preferences as prefs
+from .generator.tree_code_generator import generate_logic_node_code
+from .editor.nodetree import LogicNodeTree
+# from . import basicnodes
+from . import utilities as utils
+from . import audio
+
+from .props.customnode import custom_node  # noqa
+from .props.customnode import CustomNodeReference
 
 
 bl_info = {
@@ -14,20 +40,18 @@ bl_info = {
         "A Node System to create game logic."
     ),
     "author": "pgi, Leopold A-C (Iza Zed)",
-    "version": (2, 3),
+    "version": (5, 1, 1),
     "blender": (3, 6, 0),
     "location": "View Menu",
-    "category": "Game Engine"
+    "category": "Game Engine",
+    "wiki_url": "https://upbge.org/#/documentation/docs/latest/manual/manual/logic_nodes/index.html",
+    "tracker_url": "https://github.com/UPBGE/UPBGE-logicnodes/issues"
 }
 
 _loaded_nodes = []
 _loaded_sockets = []
 _current_user_nodes_parent_directory = None
-_update_queue = []
 _tree_to_name_map = {}
-_tree_code_writer_started = False
-
-UPLOGIC_INSTALLED = False
 
 
 def debug(*message):
@@ -42,118 +66,9 @@ def debug(*message):
         print('[{}:{}] {}'.format(source, line, text))
 
 
-def update_current_tree_code(*ignored):
-    global _tree_code_writer_started
-    if not _tree_code_writer_started:
-        _tree_code_writer_started = True
-        bpy.ops.bgenetlogic.treecodewriter_operator()
-    now = time.time()
-    _update_queue.append(now)
-
-
-def update_tree_name(context):
-    print('Going In Here')
-    return
-    utils.set_compile_status(utils.TREE_MODIFIED)
-    new_name = tree.name
-    _tree_to_name_map[tree] = new_name
-    old_name_code = utilities.strip_tree_name(old_name)
-    new_name_code = utilities.strip_tree_name(new_name)
-    new_pymodule_name = utilities.py_module_name_for_tree(tree)
-    # old_pymodule_name = (
-    # utilities.py_module_name_for_stripped_tree_name(old_name_code))
-    new_py_controller_module_string = (
-        utilities.py_controller_module_string(new_pymodule_name)
-    )
-    for ob in bpy.data.objects:
-        old_status = None
-        is_tree_applied_to_object = False
-        for tree_item in ob.bgelogic_treelist:
-            if tree_item.tree_name == new_name:
-                st = tree_item.tree_initial_status
-                utils.remove_tree_item_from_object(ob, tree_item.tree_name)
-                new_entry = ob.bgelogic_treelist.add()
-                new_entry.tree_name = tree.name
-                new_entry.tree = tree
-                # this will set both new_entry.tree_initial_status and add a
-                # game property that makes the status usable at runtime
-                utils.set_network_initial_status_key(
-                    ob, tree.name, st
-                )
-                tree_item.tree_name = new_name
-                if old_status is not None:
-                    raise RuntimeError(
-                        "We have two trees with the same name in {}".format(
-                            ob.name
-                        )
-                    )
-        if is_tree_applied_to_object:
-            utilities.rename_initial_status_game_object_property(
-                ob, old_name, new_name
-            )
-            gs = ob.game
-            idx = 0
-            check_name = utils.make_valid_name(old_name)
-            comp_name = f'nl_{check_name.lower()}'
-            clsname = utils.make_valid_name(new_name)
-            new_comp_name = f'nl_{clsname.lower()}.{clsname}'
-            for c in gs.components:
-                if c.module == comp_name:
-                    try:
-                        ops.tree_code_generator.TreeCodeGenerator().write_code_for_tree(tree)
-                    except Exception as e:
-                        utils.error(f"Couldn't compile tree {tree.name}!")
-                        utils.error(e)
-                    text = bpy.data.texts.get(f'{comp_name}.py')
-                    if text:
-                        bpy.data.texts.remove(text)
-                    active_object = bpy.context.object
-                    bpy.context.view_layer.objects.active = ob
-                    bpy.ops.logic.python_component_remove(index=idx)
-                    bpy.ops.logic.python_component_register(component_name=new_comp_name)
-                    bpy.context.view_layer.objects.active = active_object
-                idx += 1
-
-            for sensor in gs.sensors:
-                if old_name_code in sensor.name:
-                    sensor.name = sensor.name.replace(
-                        old_name_code, new_name_code
-                    )
-            for controller in gs.controllers:
-                if old_name_code in controller.name:
-                    controller.name = controller.name.replace(
-                        old_name_code, new_name_code
-                    )
-                    if isinstance(controller, bpy.types.PythonController):
-                        controller.module = new_py_controller_module_string
-            for actuator in gs.actuators:
-                if old_name_code in actuator.name:
-                    actuator.name = actuator.name.replace(
-                        old_name_code, new_name_code
-                    )
-            utils.success(f'Renamed Tree {old_name_code} to {new_name_code}')
-    # bpy.ops.bge_netlogic.generate_logicnetwork()
-
-
-def _update_all_logic_tree_code():
-    now = time.time()
-    _update_queue.append(now)
-    now = time.time()
-    last_event = _update_queue[-1]
-    utils.set_compile_status(utils.TREE_MODIFIED)
-    try:
-        bpy.ops.bge_netlogic.generate_logicnetwork_all()
-    except Exception:
-        utils.error("Unknown Error, abort generating Network code")
-
-
 @persistent
 def _reload_texts(self, context):
-    if not hasattr(bpy.types.Scene, 'logic_node_settings'):
-        return
-    if not bpy.context or not bpy.context.scene:
-        return
-    if not bpy.context.scene.logic_node_settings.use_reload_text:
+    if not prefs().use_reload_text:
         return
     else:
         for t in bpy.data.texts:
@@ -171,7 +86,10 @@ def _reload_texts(self, context):
 @persistent
 def _generate_on_game_start(self, context):
     utils.notify('Building Logic Trees on Startup...')
-    bpy.ops.bge_netlogic.generate_logicnetwork_all()
+    for tree in bpy.data.node_groups:
+        if isinstance(tree, LogicNodeTree):
+            tree.changes_staged = True
+    generate_logic_node_code()
 
 
 @persistent
@@ -189,27 +107,6 @@ def _set_vr_mode(self, context):
     elif bpy.context.window_manager.xr_session_state and not bpy.context.scene.use_vr_audio_space:
         utils.notify('Shutting down VR mode...')
         utils.stop_vr_session()
-
-
-def _consume_update_tree_code_queue():
-    # edit_tree = getattr(bpy.context.space_data, "edit_tree", None)
-    # if edit_tree:
-    #     # edit_tree = bpy.context.space_data.edit_tree
-    #     old_name = _tree_to_name_map.get(edit_tree)
-    #     if not old_name:
-    #         _tree_to_name_map[edit_tree] = edit_tree.name
-    #     else:
-    #         if old_name != edit_tree.name:
-    #             update_tree_name(edit_tree, old_name)
-    if not _update_queue:
-        return
-    now = time.time()
-    last_event = _update_queue[-1]
-    delta = now - last_event
-    if delta > 0.25:
-        _update_queue.clear()
-        bpy.ops.bge_netlogic.generate_logicnetwork_all()
-        return True
 
 
 def _get_this_module():
@@ -341,18 +238,6 @@ def _abs_path(*relative_path_components):
     return abs_path
 
 
-#import modules and definitions
-utilities = _abs_import("utilities", _abs_path("utilities", "__init__.py"))
-ops = _abs_import("ops", _abs_path("ops", "__init__.py"))
-ui = _abs_import("ui", _abs_path("ui", "__init__.py"))
-node_menu = _abs_import("node_menu", _abs_path("ui", "node_menu.py"))
-ops.abstract_text_buffer = _abs_import("abstract_text_buffer", _abs_path("ops", "abstract_text_buffer.py"))
-ops.bl_text_buffer = _abs_import("bl_text_buffer", _abs_path("ops","bl_text_buffer.py"))
-ops.file_text_buffer = _abs_import("file_text_buffer", _abs_path("ops","file_text_buffer.py"))
-ops.uid_map = _abs_import("uid_map", _abs_path("ops", "uid_map.py"))
-ops.tree_code_generator = _abs_import("tree_code_generator", _abs_path("ops","tree_code_generator.py"))
-
-
 def load_nodes_from(abs_dir):
     print("loading project nodes and cells from {}".format(abs_dir))
     dir_file_names = os.listdir(abs_dir)
@@ -364,14 +249,16 @@ def load_nodes_from(abs_dir):
         with open(full_path, "r") as f:
             source = f.read()
         if source:
-            bge_netlogic = _get_this_module()
             locals = {
                 "bge_netlogic": _get_this_module(),
                 "__name__": mod_name,
                 "bpy": bpy}
             globals = locals
             print("loading... {}".format(mod_name))
-            exec(source, locals, globals)
+            try:
+                exec(source, locals, globals)
+            except Exception as ex:
+                print("Error loading user node module {}: {}".format(fname, ex))
             # TODO: reload source to refresh intermediate compilation?
 
 
@@ -380,45 +267,46 @@ def refresh_custom_nodes(dummy):
     setup_user_nodes()
 
 
+_old_selected: bpy.types.Object = None
 RENAMING = False
+_added_dynamic_properties = []
 
 
 @persistent
-def request_tree_code_writer_start(dummy):
-    global _tree_code_writer_started
-    _tree_code_writer_started = False
-    # generator = bpy.ops.tree_code_generator.TreeCodeGenerator()
-    if getattr(bpy.context.scene.logic_node_settings, 'use_generate_on_open', False):
-        utils.debug('Writing trees on file open...')
-        bpy.ops.bge_netlogic.generate_logicnetwork_all()
-        utils.debug('FINISHED')
-
-    global RENAMING
-    RENAMING = True
-    for tree in bpy.data.node_groups:
-        if isinstance(tree, ui.LogicNodeTree):
-            if tree.name != tree.old_name:
-                tree.update_name(False)
-    RENAMING = False
-
-
-@persistent
-def _watch_tree_names(self, context):
+def _on_deps_update(self, context):
     global RENAMING
     if RENAMING:
         return
     else:
         RENAMING = True
-        for tree in bpy.data.node_groups:
-            if isinstance(tree, ui.LogicNodeTree):
-                if tree.name != tree.old_name:
-                    tree.update_name()
-        RENAMING = False
+        try:
+            for tree in bpy.data.node_groups:
+                if isinstance(tree, LogicNodeTree):
+                    if tree.name != tree.old_name:
+                        tree.update_name()
+        finally:
+            RENAMING = False
+
+    if not prefs().auto_switch_trees:
+        return
+    global _old_selected
+    try:
+        _old_selected.location
+    except Exception:
+        _old_selected = bpy.context.active_object
+    obj = bpy.context.active_object
+    if _old_selected is not obj:
+        if isinstance(obj, bpy.types.Object):
+            if len(obj.logic_trees):
+                for area in bpy.context.window.screen.areas:
+                    if area.type == 'NODE_EDITOR':
+                        trees = [tree_ref.tree for tree_ref in obj.logic_trees]
+                        if area.spaces[0].node_tree not in trees:
+                            area.spaces[0].node_tree = obj.logic_trees[0].tree
+    _old_selected = obj
 
 
 for f in [
-    refresh_custom_nodes,
-    request_tree_code_writer_start,
     refresh_custom_nodes
 ]:
     if f in bpy.app.handlers.load_post:
@@ -427,248 +315,29 @@ for f in [
 
 
 
-
-def update_node_colors(self, context):
-    for tree in bpy.data.node_groups:
-        if isinstance(tree, ui.LogicNodeTree):
-            for node in tree.nodes:
-                if isinstance(node, bpy.types.NodeFrame):
-                    continue
-                node.use_custom_color = getattr(bpy.context.scene.logic_node_settings, 'use_custom_node_color', False)
-
-
+# XXX: Remove for 5.0
 class NLNodeTreeReference(bpy.types.PropertyGroup):
-    tree: bpy.props.PointerProperty(type=ui.LogicNodeTree)
+    tree: bpy.props.PointerProperty(type=LogicNodeTree)
     tree_name: bpy.props.StringProperty()
     tree_initial_status: bpy.props.BoolProperty()
 
 
-class NLAddonSettings(bpy.types.PropertyGroup):
-    use_custom_node_color: bpy.props.BoolProperty(
-        update=update_node_colors
-    )
-    use_node_debug: bpy.props.BoolProperty(default=True)
-    use_node_notify: bpy.props.BoolProperty(default=True)
-    use_reload_text: bpy.props.BoolProperty(default=False)
-    use_generate_on_open: bpy.props.BoolProperty(default=False)
-    use_generate_all: bpy.props.BoolProperty(default=True)
-    auto_compile: bpy.props.BoolProperty(default=False)
-    tree_compiled: bpy.props.StringProperty(default=utils.TREE_NOT_INITIALIZED)
+class LogicNodeTreeReference(bpy.types.PropertyGroup):
+    tree: bpy.props.PointerProperty(type=LogicNodeTree)
+    tree_name: bpy.props.StringProperty()
+    tree_initial_status: bpy.props.BoolProperty()
 
 
-class NodeCategory():
-
-    def __init__(self, identifier, name, description="", items=None):
-        self.identifier = identifier
-        self.name = name
-        self.description = description
-
-        if items is None:
-            self.items = lambda context: []
-        elif callable(items):
-            self.items = items
-        else:
-            def items_gen(context):
-                for item in items:
-                    if item.poll is None or item.poll(context):
-                        yield item
-            self.items = items_gen
-
-    @classmethod
-    def poll(cls, context):
-        enabled = (context.space_data.tree_type == ui.LogicNodeTree.bl_idname)
-        return enabled
-
-    def draw(self, item, layout, context, separate=False):
-        if separate:
-            layout.separator()
+_registered_classes = []
 
 
-
-class NodeSearch(bpy.types.Operator):
-    bl_idname = "an.node_search"
-    bl_label = "Node Search"
-    bl_options = {"REGISTER"}
-    bl_property = "item"
-
-    def getSearchItems(self, context):
-        # itemsByIdentifier.clear()
-        items = []
-        # for item in itertools.chain(iterSingleNodeItems()):
-        #     itemsByIdentifier[item.identifier] = item
-        #     items.append((item.identifier, item.searchTag, ""))
-        return items
-
-    item: bpy.props.EnumProperty(items=getSearchItems)
-
-    @classmethod
-    def poll(cls, context):
-        try: return context.space_data.node_tree.bl_idname == "an_AnimationNodeTree"
-        except: return False
-
-    def invoke(self, context, event):
-        context.window_manager.invoke_search_popup(self)
-        return {"CANCELLED"}
-
-    def execute(self, context):
-        # itemsByIdentifier[self.item].insert()
-        return {"FINISHED"}
-
-
-_uplogic_versions = [
-    ('1.9.5', '1.9.5', 'Suitable for Logic Nodes 2.3 or lower')
-]
-
-
-class LogicNodesAddonPreferences(bpy.types.AddonPreferences):
-    bl_idname = __name__
-    uplogic_version: bpy.props.EnumProperty(items=_uplogic_versions)
-
-    def draw(self, context):
-        layout = self.layout
-        box = layout.box()
-        col = box.column()
-        col.label(
-            text='Logic Nodes require the uplogic module, please install if missing.',
-            icon='CHECKMARK' if 'uplogic' in sys.modules else 'ERROR'
-        )
-        row = col.row(align=True)
-        row.operator('bge_netlogic.install_uplogic_module', icon='IMPORT')
-        row.prop(self, 'uplogic_version', text='')
-        # col.operator('bge_netlogic.install_fake_bge_module', icon='IMPORT')
-        main_row = layout.row()
-        col = layout.column()
-        debug_col = main_row.column()
-        ui_col = main_row.column()
-        code_col = main_row.column()
-        ui_col.prop(
-            context.scene.logic_node_settings,
-            'use_custom_node_color',
-            text="Dark Node Color"
-        )
-        ui_col.prop(
-            context.scene.logic_node_settings,
-            'use_reload_text',
-            text="Reload Scripts on Game Start"
-        )
-        debug_col.prop(
-            context.scene.logic_node_settings,
-            'use_node_notify',
-            text="Notifications"
-        )
-        debug_col.prop(
-            context.scene.logic_node_settings,
-            'use_node_debug',
-            text="Debug Mode (Print Errors to Console)"
-        )
-        code_col.label(text='Generate Code:')
-        code_col.prop(
-            context.scene.logic_node_settings,
-            'use_generate_all',
-            text="On Fail."
-        )
-        code_col.prop(
-            context.scene.logic_node_settings,
-            'auto_compile',
-            text="After Editing (Slow)."
-        )
-        code_col.prop(
-            context.scene.logic_node_settings,
-            'use_generate_on_open',
-            text="On File Open."
-        )
-        col.separator()
-        link_row = col.row(align=True)
-        link_row.operator("bge_netlogic.github", icon="URL")
-        # link_row.operator("bge_netlogic.update_tree_version", icon='PLUGIN')
-        link_row.operator("bge_netlogic.donate", icon="FUND")
-        contrib_row = col.row()
-        contrib_row.label(text='Contributors: VUAIEO, Simon, L_P, p45510n')
-
-
-basicnodes = _abs_import("basicnodes", _abs_path("basicnodes", "__init__.py"))
-_registered_classes = [
-    ui.LogicNodeTree,
-    ops.NLInstallUplogicModuleOperator,
-    ops.NLInstallFakeBGEModuleOperator,
-    ops.NLSelectTreeByNameOperator,
-    ops.NLRemoveTreeByNameOperator,
-    ops.NLApplyLogicOperator,
-    ops.NLAdd4KeyTemplateOperator,
-    ops.NLGenerateLogicNetworkOperatorAll,
-    ops.NLGenerateLogicNetworkOperator,
-    ops.NLImportProjectNodes,
-    ops.NLLoadProjectNodes,
-    ops.WaitForKeyOperator,
-    ops.TreeCodeWriterOperator,
-    ops.NLMakeGroupOperator,
-    ops.NLLoadSoundOperator,
-    ops.NLLoadImageOperator,
-    ops.NLSwitchInitialNetworkStatusOperator,
-    ops.NLUpdateTreeVersionOperator,
-    ops.NLAddPropertyOperator,
-    ops.NLAddComponentOperator,
-    ops.NLRemovePropertyOperator,
-    ops.NLMovePropertyOperator,
-    ops.NLPopupTemplatesOperator,
-    ops.NLAddonPatreonButton,
-    ops.NLAddonGithubButton,
-    ops.NLBGEDocsButton,
-    ops.NLUPBGEDocsButton,
-    ops.NLDocsButton,
-    ops.NLAddGlobalOperator,
-    ops.NLRemoveGlobalOperator,
-    ops.NLAddGlobalCatOperator,
-    ops.NLRemoveGlobalCatOperator,
-    ops.NLResetEmptySize,
-    ops.NLMakeCustomMainLoop,
-    ops.NLMakeCustomLoopTree,
-    ops.NLSelectAppliedObject,
-    ops.NLReloadTexts,
-    ops.NLReloadComponents,
-    ops.NLStartAudioSystem,
-    ops.NLRemoveListItemSocket,
-    ops.NLAddListItemSocket,
-    ops.NLLoadFontOperator,
-    ops.NLNodeSearch,
-    # ops.NLStartGameHere,
-    NLNodeTreeReference
-]
-
-_registered_classes.extend(basicnodes._sockets)
-
-
-_registered_classes.extend(basicnodes._nodes)
-
-
-_registered_classes.extend(node_menu._items)
-
-
-_registered_classes.extend([
-    NLAddonSettings,
-    LogicNodesAddonPreferences,
-    ui.BGEPropFilter,
-    ui.BGEGroupName,
-    ui.BGEGlobalValue,
-    ui.BGEGlobalValueCategory,
-    ui.BGE_PT_GameComponentHelperPanel,
-    # ui.BGEComponentHelper,
-    ui.NL_UL_glcategory,
-    ui.NL_UL_glvalue,
-    ui.BGE_PT_LogicPanel,
-    ui.BGE_PT_LogicTreeInfoPanel,
-    ui.BGE_PT_ObjectTreeInfoPanel,
-    ui.BGE_PT_GlobalValuePanel,
-    ui.BGE_PT_LogicNodeSettingsScene,
-    # ui.BGE_PT_NLEditorPropertyPanel,
-    # ui.BGE_PT_HelpPanel,
-    # ui.BGE_PT_GameComponentPanel,
-    ui.BGE_PT_LogicNodeSettingsObject,
-    ui.BGE_PT_LogicTreeOptions,
-    ui.BGE_PT_GamePropertyPanel3DView,
-    # ui.BGE_PT_PropertiesPanelObject,
-    ui.BGE_PT_LogicTreeGroups
-])
+_registered_classes.extend(_sockets)
+_registered_classes.extend(_nodes)
+_registered_classes.extend(_operators)
+_registered_classes.extend(_properties)
+_registered_classes.extend(_panels)
+_registered_classes.extend(_lists)
+_registered_classes.extend(_menu_items)
 
 
 def _get_key_for_class(c):
@@ -688,9 +357,7 @@ def update_uplogic_module():
     try:
         prefs = bpy.context.preferences.addons['bge_netlogic'].preferences
         os.system(f'"{sys.executable}" -m ensurepip')
-        os.system(f'"{sys.executable}" -m pip install uplogic=={prefs.uplogic_version}')
-        global UPLOGIC_INSTALLED
-        UPLOGIC_INSTALLED = True
+        os.system(f'"{sys.executable}" -m pip install uplogic --upgrade')
     except Exception:
         pass
 
@@ -698,30 +365,60 @@ def update_uplogic_module():
 def get_uplogic_module():
     try:
         os.system(f'"{sys.executable}" -m ensurepip')
-        os.system(f'"{sys.executable}" -m pip install uplogic==1.9.5')
-        global UPLOGIC_INSTALLED
-        UPLOGIC_INSTALLED = True
+        os.system(f'"{sys.executable}" -m pip install uplogic')
     except Exception:
         pass
 
 
-def filter_components(self, item=bpy.types.Text):
-    if not item.name.startswith('nl_'):
-        return True
-    return False
+
+@persistent
+def _update_properties(file):
+    for obj in bpy.data.objects:
+        applied_trees = obj.get('bgelogic_treelist', None)
+        if applied_trees is not None:
+            for tree in obj.bgelogic_treelist:
+                _tree = obj.logic_trees.add()
+                _tree.tree = tree.tree
+                _tree.tree_name = tree.tree_name
+                _tree.tree_initial_status = tree.tree_initial_status
+                # XXX: del obj['bgelogic_treelist']
+
+
+def node_manual():
+    prefix = "https://upbge.org/#/documentation/docs/latest/manual/manual/logic_nodes/index.html"
+    ret = (prefix, _node_manual_map)
+    return ret
 
 
 # blender add-on registration callback
 def register():
+    print('Registering Logic Nodes...')
+    # if _generate_on_game_start in bpy.app.handlers.game_pre:
+    #     print('Already registered, aborting.')
+    #     return
+    bpy.utils.register_manual_map(node_manual)
     bpy.types.NODE_MT_add.append(node_menu.draw_add_menu)
     bpy.app.handlers.game_pre.append(_generate_on_game_start)
+    bpy.app.handlers.game_post.append(utils.check_uplogic_module)
     bpy.app.handlers.game_pre.append(_jump_in_game_cam)
     bpy.app.handlers.game_pre.append(_set_vr_mode)
     bpy.app.handlers.game_pre.append(_reload_texts)
-    bpy.app.handlers.depsgraph_update_post.append(_watch_tree_names)
+    bpy.app.handlers.load_post.append(_update_properties)
+
+    bpy.app.handlers.depsgraph_update_post.append(_on_deps_update)
     for cls in _registered_classes:
         bpy.utils.register_class(cls)
 
+    bpy.utils.register_class(LogicNodeTree)
+    bpy.utils.register_class(LogicNodeTreeReference)
+    bpy.utils.register_class(CustomNodeReference)
+    bpy.utils.register_class(LogicNodesAddonPreferences)
+
+    for node in prefs().custom_logic_nodes:
+        try:
+            exec(node.ui_code, {"bge_netlogic": _get_this_module()})
+        except Exception as ex:
+            print(f'Error executing ui_code of custom node "{node.label}": {ex}')
     bpy.types.Object.sound_occluder = bpy.props.BoolProperty(
         default=True,
         name='Sound Occluder',
@@ -747,63 +444,102 @@ def register():
         description='Samples used by this reverb volume. More samples mean a longer reverberation'
     )
 
+    # XXX: Remove bgelogic_treelist attr in the future
     bpy.types.Object.bgelogic_treelist = bpy.props.CollectionProperty(
-        type=NLNodeTreeReference
+        type=LogicNodeTreeReference
     )
-    bpy.types.Scene.prop_filter = bpy.props.PointerProperty(
-        type=ui.BGEPropFilter
+
+    bpy.types.Object.logic_trees = bpy.props.CollectionProperty(
+        type=LogicNodeTreeReference
     )
-    bpy.types.Scene.nl_group_name = bpy.props.PointerProperty(
-        type=ui.BGEGroupName
+
+    bpy.types.Scene.use_vr_audio_space = bpy.props.BoolProperty(name='Use VR Audio Space', default=False)
+    bpy.types.Scene.jump_in_game_cam = bpy.props.BoolProperty(name='Use Game Camera On Start', default=False)
+    bpy.types.Scene.use_screen_console = bpy.props.BoolProperty(name='Screen Console', description='Print messages to an on-screen console.\nNeeds at least one uplogic import or Logic Node Tree.\nNote: Errors are not printed to this console')
+    bpy.types.Scene.screen_console_key = bpy.props.StringProperty(name='Screen Console Key', description='', default='BACKSLASH')
+    bpy.types.Scene.screen_console_open = bpy.props.BoolProperty(name='Open', description='When in debug mode, the on-screen console will always display messages, even when inactive')
+
+    def filter_components(self, item=bpy.types.Text):
+        if not item.name.startswith('nl_'):
+            return True
+
+    bpy.types.Scene.componenthelper = bpy.props.PointerProperty(
+        type=bpy.types.Text,
+        poll=filter_components,
+        name='Component',
+        description='Add a component defined in this file'
     )
-    bpy.types.Scene.logic_node_settings = bpy.props.PointerProperty(
-        type=NLAddonSettings
-    )
-    bpy.types.Scene.nl_global_categories = bpy.props.CollectionProperty(
-        type=ui.BGEGlobalValueCategory
-    )
-    bpy.types.Scene.nl_componenthelper = bpy.props.PointerProperty(
-        type=bpy.types.Text, poll=filter_components, name='Component', description='Add the first component defined in this file'
-    )
-    bpy.types.Scene.nl_global_cat_selected = bpy.props.IntProperty(
-        name='Category'
-    )
-    bpy.types.Scene.use_vr_audio_space = bpy.props.BoolProperty(
-        name='Use VR Audio Space'
-    )
-    bpy.types.Scene.jump_in_game_cam = bpy.props.BoolProperty(
-        name='Use Game Camera On Start'
-    )
+    bpy.types.Scene.nl_portals = bpy.props.CollectionProperty(type=LogicNodesPortal)
+    bpy.types.Scene.nl_fmod_parameters = bpy.props.CollectionProperty(type=LogicNodesFmodParameter)
+    bpy.types.Scene.nl_global_categories = bpy.props.CollectionProperty(type=LogicNodesGlobalCategory)
+    bpy.types.Scene.nl_global_cat_selected = bpy.props.IntProperty(name='Category')
     bpy.types.Scene.custom_mainloop_tree = bpy.props.PointerProperty(
         name='Custom Mainloop Tree',
         type=bpy.types.NodeTree
     )
-    bpy.types.Scene.use_screen_console = bpy.props.BoolProperty(
-        name='Screen Console',
-        description='Print messages to an on-screen console.\nNeeds at least one uplogic import or Logic Node Tree.\nNote: Errors are not printed to this console'
-    )
-    bpy.types.Scene.screen_console_open = bpy.props.BoolProperty(
-        name='Open',
-        description='Start the game with the on-screen console already open'
-    )
-    get_uplogic_module()
+
+    _added_dynamic_properties.extend([
+        (bpy.types.Object, 'sound_occluder'),
+        (bpy.types.Object, 'sound_blocking'),
+        (bpy.types.Object, 'reverb_volume'),
+        (bpy.types.Object, 'reverb_samples'),
+        (bpy.types.Object, 'bgelogic_treelist'),
+        (bpy.types.Object, 'logic_trees'),
+        (bpy.types.Scene, 'use_vr_audio_space'),
+        (bpy.types.Scene, 'jump_in_game_cam'),
+        (bpy.types.Scene, 'use_screen_console'),
+        (bpy.types.Scene, 'screen_console_key'),
+        (bpy.types.Scene, 'screen_console_open'),
+        (bpy.types.Scene, 'componenthelper'),
+        (bpy.types.Scene, 'nl_portals'),
+        (bpy.types.Scene, 'nl_fmod_parameters'),
+        (bpy.types.Scene, 'nl_global_categories'),
+        (bpy.types.Scene, 'nl_global_cat_selected'),
+        (bpy.types.Scene, 'custom_mainloop_tree'),
+    ])
+
+
+def _remove_handler(handler_list, handler):
+    for f in list(handler_list):
+        if f is handler or getattr(f, '__name__', None) == handler.__name__:
+            handler_list.remove(f)
 
 
 # blender add-on unregistration callback
 def unregister():
+    print('Unregistering Logic Nodes...')
+    bpy.utils.unregister_manual_map(node_manual)
     bpy.types.NODE_MT_add.remove(node_menu.draw_add_menu)
     utils.debug('Removing Game Start Compile handler...')
-    remove_f = []
-    filter(lambda a: a.__name__ == '_generate_on_game_start', bpy.app.handlers.game_pre)
-    filter(lambda a: a.__name__ == '_watch_tree_names', bpy.app.handlers.depsgraph_update_post)
-    filter(lambda a: a.__name__ == '_reload_texts', bpy.app.handlers.game_pre)
-    for f in bpy.app.handlers.game_pre:
-        if f.__name__ == '_generate_on_game_start' or f.__name__ == '_reload_texts':
-            remove_f.append(f)
-    for f in remove_f:
-        bpy.app.handlers.game_pre.remove(f)
+    for handler_list, handler in (
+        (bpy.app.handlers.game_pre, _generate_on_game_start),
+        (bpy.app.handlers.game_pre, _jump_in_game_cam),
+        (bpy.app.handlers.game_pre, _set_vr_mode),
+        (bpy.app.handlers.game_pre, _reload_texts),
+        (bpy.app.handlers.game_post, utils.check_uplogic_module),
+        (bpy.app.handlers.load_post, _update_properties),
+        (bpy.app.handlers.load_post, refresh_custom_nodes),
+        (bpy.app.handlers.depsgraph_update_post, _on_deps_update),
+    ):
+        _remove_handler(handler_list, handler)
+
+    audio.cleanup()
+    _clear_widgets()
+    _reset_tree_code_writer_flag()
+    for owner, name in _added_dynamic_properties:
+        if hasattr(owner, name):
+            try:
+                delattr(owner, name)
+            except Exception:
+                pass
+    _added_dynamic_properties.clear()
+
     for cls in reversed(_registered_classes):
         bpy.utils.unregister_class(cls)
+
+    for cls in reversed(_registered_custom_classes):
+        bpy.utils.unregister_class(cls)
+
     user_node_categories = set()
     for pair in _loaded_nodes:
         cat = pair[0]
@@ -815,6 +551,7 @@ def unregister():
                 bpy.utils.unregister_class(getattr(bpy.types, node_id))
         except RuntimeError as ex:
             print("Custom node {} not unloaded [{}]".format(cls.__name__, ex))
+
     for pair in _loaded_sockets:
         cat = pair[0]
         cls = pair[1]
@@ -825,3 +562,30 @@ def unregister():
                 bpy.utils.unregister_class(getattr(bpy.types, node_id))
         except RuntimeError as ex:
             print("Custom socket {} not unloaded [{}]".format(cls.__name__, ex))
+
+
+
+# # Callback function for location changes
+# def obj_location_callback(ob):
+#     # Do something here
+#     print('Selected Object has changed!')
+
+
+# # Subscribe to the context object (mesh)
+# def subscribe_to_obj_loc(context: bpy.types.Context):
+
+#     context.temp_override()
+#     subscribe_to = context.path_resolve("active_object", False)
+
+#     bpy.msgbus.subscribe_rna(
+#         key=subscribe_to,
+#         # owner of msgbus subcribe (for clearing later)
+#         owner=context,
+#         # Args passed to callback function (tuple)
+#         args=(context),
+#         # Callback function for property update
+#         notify=obj_location_callback,
+#     )
+
+# # Ensure only meshes are passed to this function
+# subscribe_to_obj_loc(bpy.context)

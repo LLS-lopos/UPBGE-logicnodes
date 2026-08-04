@@ -224,6 +224,18 @@ class NLAudioSystem(object):
         SYSTEM = None
 
 
+def cleanup():
+    '''Stop and release the global audio device. Called on addon unregister.'''
+    global SYSTEM
+    if SYSTEM is not None:
+        try:
+            SYSTEM.device.stopAll()
+        except Exception:
+            pass
+        SYSTEM.device = None
+        SYSTEM = None
+
+
 def get_audio_system(system_name: str = 'default', mode: str = '3D') -> NLAudioSystem:
     '''Get or create a `ULAudioSystem` with the given name.
 

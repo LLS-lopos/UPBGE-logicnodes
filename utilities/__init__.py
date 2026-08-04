@@ -1,5 +1,6 @@
 import bpy
 import os
+from ..preferences import LogicNodesAddonPreferences
 
 
 TREE_COMPILED = 'Compiled'
@@ -18,17 +19,14 @@ STATUS_ICONS = {
 }
 
 NLPREFIX = 'NL__'
+LOGIC_NODE_IDENTIFIER = 'NL__'
 
 
-def set_compile_status(status):
-    try:
-        bpy.context.scene.logic_node_settings.tree_compiled = status
-    except:
-        pass
+DEPRECATED = 'DEPRECATED'
 
 
-def is_compile_status(status):
-    return bpy.context.scene.logic_node_settings.tree_compiled == status
+ERROR_MESSAGES = []
+WARNING_MESSAGES = []
 
 
 def start_vr_session():
@@ -207,12 +205,69 @@ class Color(object):
     pass
 
 
+def uplogic_message(self, context):
+    self.layout.label(text='NOTE: This can also be done in the "Help & Documentation" tab.')
+    self.layout.separator()
+    self.layout.operator('logic_nodes.install_uplogic')
+
+
+def allow_online_access(self, context):
+    self.layout.operator("extensions.userpref_allow_online", text="Allow Online Access", icon='CHECKMARK')
+    props = self.layout.operator("wm.context_set_boolean", text="Continue Offline", icon='X')
+    props.data_path = "preferences.extensions.use_online_access_handled"
+
+
+def uplogic_installed_version():
+    try:
+        from importlib.metadata import version as pkg_version, PackageNotFoundError
+        try:
+            return pkg_version('uplogic')
+        except PackageNotFoundError:
+            return None
+    except Exception:
+        try:
+            import pkg_resources
+            for p in pkg_resources.working_set:
+                if p.key == 'uplogic':
+                    return p.version
+        except Exception:
+            pass
+    return None
+
+
+def online_access_allowed():
+    online_access = getattr(bpy.app, 'online_access', None)
+    if online_access is None:
+        return False
+    try:
+        return bool(online_access())
+    except TypeError:
+        return bool(online_access)
+
+
+def check_uplogic_module():
+    version = uplogic_installed_version()
+    uplogic_installed = version is not None
+    version_ok = True
+    if uplogic_installed:
+        try:
+            from uplogic import check_version, __version__
+            version_ok = check_version('5')
+        except ImportError:
+            pass
+    if not uplogic_installed or not version_ok:
+        if bpy.context is not None and bpy.context.window_manager is not None:
+            bpy.context.window_manager.popup_menu(uplogic_message, title="Uplogic module missing", icon='INFO')
+            if not online_access_allowed() and hasattr(bpy.app, 'online_access'):
+                bpy.context.window_manager.popup_menu(allow_online_access, title="Allow Online Access")
+        return False
+
+    return True
+
+
 def debug(message):
-    if not hasattr(bpy.types.Scene, 'logic_node_settings'):
-        return
-    if not bpy.context or not bpy.context.scene:
-        return
-    if not bpy.context.scene.logic_node_settings.use_node_debug:
+    prefs = preferences()
+    if prefs is None or not prefs.use_node_debug:
         return
     else:
         os.system('color')
@@ -220,11 +275,8 @@ def debug(message):
 
 
 def notify(message):
-    if not hasattr(bpy.types.Scene, 'logic_node_settings'):
-        return
-    if not bpy.context or not bpy.context.scene:
-        return
-    if not bpy.context.scene.logic_node_settings.use_node_notify:
+    prefs = preferences()
+    if prefs is None or not prefs.use_node_notify:
         return
     else:
         os.system('color')
@@ -237,30 +289,25 @@ def error(message):
 
 
 def warn(message):
-    if not hasattr(bpy.types.Scene, 'logic_node_settings'):
-        return
-    if not bpy.context or not bpy.context.scene:
-        return
-    if not bpy.context.scene.logic_node_settings.use_node_debug:
-        return
-    else:
-        os.system('color')
-        print(f'[Logic Nodes][{ansicol.YELLOW}WARNING{ansicol.END}] ' + message)
+    os.system('color')
+    print(f'[Logic Nodes][{ansicol.YELLOW}WARNING{ansicol.END}] ' + message)
+
+
+def deprecate(node, tree):
+    os.system('color')
+    print(f"[Logic Nodes][{ansicol.YELLOW}WARNING{ansicol.END}] Node '{node.name}' in tree '{tree.name}' is deprecated and will be removed in a future release!")
 
 
 def success(message):
-    if not hasattr(bpy.types.Scene, 'logic_node_settings'):
-        return
-    if not bpy.context or not bpy.context.scene:
-        return
-    if not bpy.context.scene.logic_node_settings.use_node_debug:
+    prefs = preferences()
+    if prefs is None or not prefs.use_node_debug:
         return
     else:
         os.system('color')
         print(f'[Logic Nodes][{ansicol.GREEN}SUCCESS{ansicol.END}] ' + message)
 
 
-def make_valid_name(name):
+def make_valid_name(name) -> str:
     valid_characters = (
         "_abcdefghijklmnopqrstuvwxyz1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ"
     )
@@ -269,30 +316,6 @@ def make_valid_name(name):
         [c for c in clsname if c in valid_characters]
     )
     return stripped_name
-
-
-def get_global_category():
-    scene = bpy.context.scene
-    return (
-        scene.nl_global_categories[0]
-        if
-        scene.nl_global_cat_selected > len(scene.nl_global_categories) - 1
-        else
-        scene.nl_global_categories[scene.nl_global_cat_selected]
-    )
-
-
-def get_global_value():
-    cat = get_global_category()
-    if len(cat.content) < 1:
-        return None
-    return (
-        cat.content[0]
-        if
-        cat.selected > len(cat.content) - 1
-        else
-        cat.content[cat.selected]
-    )
 
 
 def register_inputs(node, *data):
@@ -435,7 +458,7 @@ def set_network_initial_status_key(ob, tree_name, initial_status_value, update_o
         game_property.value = initial_status_value
     if update_object_tree_item:
         # print("also updating the tree_item...", ob)
-        for tree_item in ob.bgelogic_treelist:
+        for tree_item in ob.logic_trees:
             # print("looking at", tree_item.tree_name, "vs", tree_name)
             if tree_item.tree_name == tree_name:
                 # print("set initial status", ob.name, tree_name, initial_status_value)
@@ -472,18 +495,18 @@ def remove_network_initial_status_key(ob, tree_name):
 
 def remove_tree_item_from_object(ob, tree_name):
     index = -1
-    for item in ob.bgelogic_treelist:
+    for item in ob.logic_trees:
         index += 1
         if item.tree_name == tree_name:
             break
     if index >= 0:
-        ob.bgelogic_treelist.remove(index)
+        ob.logic_trees.remove(index)
     else:
         debug("WARNING 18763 cannot remove item {} from object {} because no such item exists in that object".format(tree_name, ob.name))
 
 
 def object_has_treeitem_for_treename(ob, treename):
-    for item in ob.bgelogic_treelist:
+    for item in ob.logic_trees:
         if item.tree_name == treename:
             return True
     return False
@@ -498,6 +521,72 @@ def compute_initial_status_of_tree(tree_name, objects):
     return last_status#all states are the same
 
 
+def add_tree_to_active_objects(tree):
+    active_object = bpy.context.object
+    if not active_object:
+        return
+    scene = bpy.context.scene
+    selected_objects = [
+        ob for ob in scene.objects if ob.select_get()
+    ]
+    if len(selected_objects) < 1:
+        return
+    tree.use_fake_user = True
+    initial_status = compute_initial_status_of_tree(
+        tree.name, selected_objects
+    )
+    try:
+        from ..generator.tree_code_generator import TreeCodeGenerator
+        TreeCodeGenerator().write_code_for_tree(tree)
+    except Exception as e:
+        error(f"Couldn't compile tree {tree.name}!")
+        print(e)
+        return
+    initial_status = True if initial_status is None else False
+    # TreeCodeGenerator().write_code_for_tree(tree)
+    for obj in selected_objects:
+        tree_name = make_valid_name(tree.name)
+        module = f'nl_{tree_name.lower()}'
+        name = f'{module}.{tree_name}'
+        comps = [c.module for c in obj.game.components]
+        if obj.name in bpy.context.view_layer.objects:
+            bpy.context.view_layer.objects.active = obj
+        else:
+            error(f'Object {obj.name} not in view layer, please check for references. Skipping...')
+            continue
+        if module not in comps:
+            bpy.ops.logic.python_component_register(component_name=name)
+            success(
+                "Applied tree {} to object {}.".format(
+                    tree.name,
+                    obj.name
+                )
+            )
+        else:
+            success(
+                "Tree {} already applied to object {}. Updating status.".format(
+                    tree.name,
+                    obj.name
+                )
+            )
+        tree_collection = obj.logic_trees
+        contains = False
+        for t in tree_collection:
+            if t.tree_name == tree.name:
+                contains = True
+                break
+        if not contains:
+            new_entry = tree_collection.add()
+            new_entry.tree_name = tree.name
+            new_entry.tree = tree
+            # this will set both new_entry.tree_initial_status and add a
+            # game property that makes the status usable at runtime
+            set_network_initial_status_key(
+                obj, tree_name, initial_status
+            )
+    bpy.context.view_layer.objects.active = active_object
+
+
 def newNodeAtCursor(type):
     bpy.ops.node.add_node(type=type)
     return bpy.context.space_data.node_tree.nodes[-1]
@@ -507,14 +596,199 @@ def invokeTranslation():
     bpy.ops.node.translate_attach("INVOKE_DEFAULT")
 
 
-def iterLogicNodeClasses():
-    from bge_netlogic.basicnodes import NLNode
-    yield from iterSubclassesWithAttribute(NLNode, "bl_idname")
-
-
 def iterSubclassesWithAttribute(cls, attribute):
     for subcls in cls.__subclasses__():
         if hasattr(subcls, attribute):
             yield subcls
         else:
             yield from iterSubclassesWithAttribute(subcls, attribute)
+
+
+def update_draw(self, context=None):
+    return
+    # from bge_netlogic.basicnodes import NLNode
+    if not hasattr(context.space_data, 'edit_tree'):
+        return
+    tree = context.space_data.edit_tree
+    for node in tree.nodes:
+        if hasattr(node, 'update_draw'):
+            try:
+                node.update_draw(context)
+            except Exception as e:
+                error(f'Failed node {node}, {e}')
+                pass
+
+def parse_value_type(value_type, value):
+    t = value_type
+    v = value
+
+    if t == "NONE":
+        return "None"
+
+    if t == "INTEGER":
+        try:
+            return int(v)
+        except ValueError:
+            return "0.0"
+
+    if t == "FLOAT":
+        try:
+            return float(v)
+        except ValueError:
+            return "0.0"
+
+    if t == "STRING":
+        return '"{}"'.format(v)
+
+    if t == "FILE_PATH":
+        return '"{}"'.format(v)
+
+    if t == "BOOLEAN":
+        return v
+
+    raise ValueError(
+        "Cannot parse enum {} type for NLValueFieldSocket".format(t)
+    )
+
+
+def key_event(ks):
+    ks = ks.replace("ASTERIX", "ASTER")
+
+    if ks == "NONE":
+        return "None"
+
+    if ks == "RET":
+        ks = "ENTER"
+
+    if ks.startswith("NUMPAD_"):
+        ks = ks.replace("NUMPAD_", "PAD")
+        if("SLASH" in ks or "ASTER" in ks or "PLUS" in ks):
+            ks = ks.replace("SLASH", "SLASHKEY")
+            ks = ks.replace("ASTER", "ASTERKEY")
+            ks = ks.replace("PLUS", "PLUSKEY")
+        return "bge.events.{}".format(ks)
+
+    x = "{}KEY".format(ks.replace("_", ""))
+
+    return "bge.events.{}".format(x)
+
+
+def preferences() -> LogicNodesAddonPreferences:
+    if bpy.context is None:
+        return None
+    try:
+        return bpy.context.preferences.addons['bge_netlogic'].preferences
+    except Exception:
+        return None
+
+
+COMPONENT_TEMPLATE = """\
+import bge, bpy
+from collections import OrderedDict
+class {}(bge.types.KX_PythonComponent):
+    {}
+    def start(self, args): pass
+    def update(self): pass"""
+
+
+COMPONENT_TEMPLATE = """\
+import bge, bpy
+from collections import OrderedDict
+class {}(bge.types.KX_PythonComponent):
+    {}
+    def start(self, args): pass
+    def update(self): pass"""
+
+
+def build_template(text, component):
+    if isinstance(text, str):
+        if not text.endswith('.py'):
+            text += '.py'
+        text = bpy.data.texts.get(text, None)
+    if text is None:
+        # bpy.context.window_manager.popup_menu(comp_failed)
+        return
+    comp_name = component
+    cargs = ''
+    in_args = False
+    in_comp = False
+    for line in text.lines:
+        if f'{comp_name}(' in line.body:
+            in_comp = True
+            continue
+        if not in_comp:
+            continue
+        line.body = line.body.replace(' ', '')
+        if line.body.startswith('@'):
+            continue
+        if in_comp:
+            if 'args =' in line.body or 'args=' in line.body:
+                in_args = True
+            if '])' in line.body and in_args:
+                cargs += line.body
+                break
+            if in_args:
+                cargs += line.body
+    return COMPONENT_TEMPLATE.format(comp_name, cargs)
+
+
+def add_component(text, component):
+    module = text.name[:len(text.name) - 3]
+    body = text.as_string()
+    template = build_template(text, component)
+    try:
+        text.clear()
+        text.write(template)
+        bpy.ops.logic.python_component_register(component_name=f'{module}.{component}')
+        text.clear()
+        text.write(body)
+    except Exception as e:
+        text.clear()
+        text.write(body)
+
+
+# def add_component(text, component, obj=None):
+#     if obj is not None:
+#         bpy.context.view_layer.objects.active = obj
+#     if isinstance(text, str):
+#         if not text.endswith('.py'):
+#             text += '.py'
+#         text = bpy.data.texts.get(text, None)
+#     if text is None:
+#         def comp_failed(self, context):
+#             self.layout.label(text='Text not present!')
+#         bpy.context.window_manager.popup_menu(comp_failed)
+#         return
+#     comp_name = component
+#     mod_name = text.name[:len(text.name) - 3]
+#     body = text.as_string()
+#     cargs = ''
+#     in_args = False
+#     in_comp = False
+#     for line in text.lines:
+#         if f'{comp_name}(' in line.body:
+#             in_comp = True
+#             continue
+#         if not in_comp:
+#             continue
+#         line.body = line.body.replace(' ', '')
+#         if line.body.startswith('@'):
+#             continue
+#         if in_comp:
+#             if 'args' in line.body:
+#                 in_args = True
+#             if '])' in line.body and in_args:
+#                 cargs += line.body
+#                 break
+#             if in_args:
+#                 cargs += line.body
+#     template = COMPONENT_TEMPLATE.format(comp_name, cargs)
+#     try:
+#         text.clear()
+#         text.write(template)
+#         bpy.ops.logic.python_component_register(component_name=f'{mod_name}.{comp_name}')
+#         text.clear()
+#         text.write(body)
+#     except Exception as e:
+#         text.clear()
+#         text.write(body)
