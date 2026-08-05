@@ -29,14 +29,6 @@ _nodes = []
 _node_manual_map = []
 
 
-def _quote_string_field(value):
-    if isinstance(value, str):
-        if value.startswith(("'", '"')):
-            return value
-        return f'"{value}"'
-    return value
-
-
 def node_type(obj):
     if obj.nl_module is None:
         error(f'{obj.bl_label}: Uplogic Module not defined! Node not registered.')
@@ -246,7 +238,7 @@ class LogicNode:
         else:
             field_value = None
             if not socket.linked_valid:
-                field_value = _quote_string_field(socket.get_default_value())
+                field_value = socket.get_default_value()
             else:
                 field_value = self.get_linked_value(socket, uids)
             
