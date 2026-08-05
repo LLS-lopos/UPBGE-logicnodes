@@ -540,6 +540,12 @@ def unregister():
     for cls in reversed(_registered_custom_classes):
         bpy.utils.unregister_class(cls)
 
+    for cls in (LogicNodesAddonPreferences, CustomNodeReference, LogicNodeTreeReference, LogicNodeTree):
+        try:
+            bpy.utils.unregister_class(cls)
+        except RuntimeError:
+            pass
+
     user_node_categories = set()
     for pair in _loaded_nodes:
         cat = pair[0]

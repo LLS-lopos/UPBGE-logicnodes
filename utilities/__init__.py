@@ -265,12 +265,17 @@ def check_uplogic_module():
     return True
 
 
+def _enable_ansi():
+    if os.name == 'nt':
+        os.system('color')
+
+
 def debug(message):
     prefs = preferences()
     if prefs is None or not prefs.use_node_debug:
         return
     else:
-        os.system('color')
+        _enable_ansi()
         print(f'[Logic Nodes][{ansicol.BYELLOW}DEBUG{ansicol.END}] {message}')
 
 
@@ -279,22 +284,22 @@ def notify(message):
     if prefs is None or not prefs.use_node_notify:
         return
     else:
-        os.system('color')
+        _enable_ansi()
         print(f'[Logic Nodes][{ansicol.BBLUE}NOTIFICATION{ansicol.END}] {message}')
 
 
 def error(message):
-    os.system('color')
+    _enable_ansi()
     print(f'[Logic Nodes][{ansicol.RED}ERROR{ansicol.END}] {message}')
 
 
 def warn(message):
-    os.system('color')
+    _enable_ansi()
     print(f'[Logic Nodes][{ansicol.YELLOW}WARNING{ansicol.END}] ' + message)
 
 
 def deprecate(node, tree):
-    os.system('color')
+    _enable_ansi()
     print(f"[Logic Nodes][{ansicol.YELLOW}WARNING{ansicol.END}] Node '{node.name}' in tree '{tree.name}' is deprecated and will be removed in a future release!")
 
 
@@ -303,7 +308,7 @@ def success(message):
     if prefs is None or not prefs.use_node_debug:
         return
     else:
-        os.system('color')
+        _enable_ansi()
         print(f'[Logic Nodes][{ansicol.GREEN}SUCCESS{ansicol.END}] ' + message)
 
 

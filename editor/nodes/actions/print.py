@@ -30,7 +30,7 @@ class LogicNodePrint(LogicNodeActionType):
         LogicNodeActionType.init(self, context)
 
     def draw_buttons(self, context, layout) -> None:
-        if context.scene.use_screen_console:
+        if getattr(context.scene, 'use_screen_console', False):
             layout.prop(self, 'msg_type', text='')
 
     def get_attributes(self):
